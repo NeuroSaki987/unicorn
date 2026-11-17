@@ -367,6 +367,19 @@ static int handle_mmu_fault(CPUState *cs, vaddr addr, int size,
 #endif
     is_write = is_write1 & 1;
 
+#ifdef TARGET_X86_64
+    if (env->hflags & HF_LMA_MASK) {
+        bool la57 = env->cr[4] & CR4_LA57_MASK;
+        int32_t sext = la57 ? (int64_t)addr >> 56 : (int64_t)addr >> 47;
+
+        if (sext != 0 && sext != -1) {
+            env->error_code = 0;
+            cs->exception_index = EXCP0D_GPF;
+            return 1;
+        }
+    }
+#endif
+
     a20_mask = x86_get_a20_mask(env);
     if (!(env->cr[0] & CR0_PG_MASK)) {
         pte = addr;
@@ -394,15 +407,6 @@ static int handle_mmu_fault(CPUState *cs, vaddr addr, int size,
             bool la57 = env->cr[4] & CR4_LA57_MASK;
             uint64_t pml5e_addr, pml5e;
             uint64_t pml4e_addr, pml4e;
-            int32_t sext;
-
-            /* test virtual address sign extension */
-            sext = la57 ? (int64_t)addr >> 56 : (int64_t)addr >> 47;
-            if (sext != 0 && sext != -1) {
-                env->error_code = 0;
-                cs->exception_index = EXCP0D_GPF;
-                return 1;
-            }
 
             if (la57) {
                 pml5e_addr = ((env->cr[3] & ~0xfff) +

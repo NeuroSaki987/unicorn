@@ -1726,6 +1726,92 @@ static void test_x86_vtlb(void)
     OK(uc_close(uc));
 }
 
+static void test_x86_64_noncanonical_access(uc_mem_type access)
+{
+    const struct {
+        uint64_t address;
+        uint64_t physical;
+        bool la57;
+        uc_err expected;
+    } cases[] = {
+        {0x00007ffffffff000ULL, 0x00007ffffffff000ULL, false, UC_ERR_OK},
+        {0x0000800000000000ULL, 0x0000800000000000ULL, false, UC_ERR_EXCEPTION},
+        {0xffff7ffffffff000ULL, 0x000f7ffffffff000ULL, false, UC_ERR_EXCEPTION},
+        {0x0010008000000000ULL, 0x0000008000000000ULL, false, UC_ERR_EXCEPTION},
+        {0x0000800000000000ULL, 0x0000800000000000ULL, true, UC_ERR_OK},
+        {0x00ff000000000000ULL, 0x000f000000000000ULL, true, UC_ERR_OK},
+        {0xff00008000000000ULL, 0x0000008000000000ULL, true, UC_ERR_OK},
+        {0x0100008000000000ULL, 0x0000008000000000ULL, true, UC_ERR_EXCEPTION},
+        {0xfefffffffffff000ULL, 0x000ffffffffff000ULL, true, UC_ERR_EXCEPTION},
+    };
+    const char *code = access == UC_MEM_WRITE ? "\x48\x89\x03" : "\x48\x8b\x03";
+
+    for (size_t case_index = 0; case_index < sizeof(cases) / sizeof(cases[0]);
+         case_index++) {
+        uc_engine *uc;
+        uint64_t cr0, cr4;
+        uint64_t value = LEINT64(0x1122334455667788ULL);
+        uint64_t result = 0x8877665544332211ULL;
+        uint64_t address = cases[case_index].address;
+        uint64_t begin = access == UC_MEM_FETCH ? address : code_start;
+        uint64_t end = begin + (access == UC_MEM_FETCH ? 1 : 3);
+
+        TEST_CASE_("address=0x%" PRIx64 ", LA57=%d", address,
+                   cases[case_index].la57);
+        uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, code, 3);
+        OK(uc_ctl_tlb_mode(uc, UC_TLB_CPU));
+        OK(uc_reg_read(uc, UC_X86_REG_CR0, &cr0));
+        TEST_CHECK((cr0 & (1ULL << 31)) == 0);
+        OK(uc_reg_read(uc, UC_X86_REG_CR4, &cr4));
+        if (cases[case_index].la57) {
+            cr4 |= 1ULL << 12;
+        } else {
+            cr4 &= ~(1ULL << 12);
+        }
+        OK(uc_reg_write(uc, UC_X86_REG_CR4, &cr4));
+        OK(uc_mem_map(uc, cases[case_index].physical, 0x1000, UC_PROT_ALL));
+        OK(uc_mem_write(uc, cases[case_index].physical, &value, sizeof(value)));
+        if (access == UC_MEM_FETCH) {
+            OK(uc_mem_write(uc, cases[case_index].physical, "\x90", 1));
+        }
+        OK(uc_reg_write(uc, UC_X86_REG_RBX, &address));
+        OK(uc_reg_write(uc, UC_X86_REG_RAX, &result));
+
+        uc_assert_err(cases[case_index].expected,
+                      uc_emu_start(uc, begin, end, 0, 1));
+
+        if (access == UC_MEM_READ) {
+            OK(uc_reg_read(uc, UC_X86_REG_RAX, &result));
+            TEST_CHECK(result == (cases[case_index].expected == UC_ERR_OK
+                                      ? 0x1122334455667788ULL
+                                      : 0x8877665544332211ULL));
+        } else if (access == UC_MEM_WRITE) {
+            OK(uc_mem_read(uc, cases[case_index].physical, &value,
+                           sizeof(value)));
+            TEST_CHECK(LEINT64(value) ==
+                       (cases[case_index].expected == UC_ERR_OK
+                            ? 0x8877665544332211ULL
+                            : 0x1122334455667788ULL));
+        }
+        OK(uc_close(uc));
+    }
+}
+
+static void test_x86_64_noncanonical_read(void)
+{
+    test_x86_64_noncanonical_access(UC_MEM_READ);
+}
+
+static void test_x86_64_noncanonical_write(void)
+{
+    test_x86_64_noncanonical_access(UC_MEM_WRITE);
+}
+
+static void test_x86_64_noncanonical_fetch(void)
+{
+    test_x86_64_noncanonical_access(UC_MEM_FETCH);
+}
+
 static void test_x86_segmentation(void)
 {
     uc_engine *uc;
@@ -2251,6 +2337,9 @@ TEST_LIST = {
     {"test_x86_mmu", test_x86_mmu},
     {"test_x86_read_virtual", test_x86_read_virtual},
     {"test_x86_vtlb", test_x86_vtlb},
+    {"test_x86_64_noncanonical_read", test_x86_64_noncanonical_read},
+    {"test_x86_64_noncanonical_write", test_x86_64_noncanonical_write},
+    {"test_x86_64_noncanonical_fetch", test_x86_64_noncanonical_fetch},
     {"test_x86_segmentation", test_x86_segmentation},
     {"test_x86_0xff_lcall", test_x86_0xff_lcall},
     {"test_x86_64_not_overwriting_tmp0_for_pc_update",
